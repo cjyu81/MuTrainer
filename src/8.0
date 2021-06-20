@@ -1,0 +1,4 @@
+Collecting websockets
+  Downloading websockets-8.1-cp36-cp36m-win_amd64.whl (66 kB)
+Installing collected packages: websockets
+Successfully installed websockets-8.1
