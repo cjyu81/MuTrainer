@@ -8,6 +8,7 @@ import torch
 @ray.remote
 class SharedStorage:
     """
+    6/27 edit
     Class which run in a dedicated thread to store the network weights and some information.
     """
 
