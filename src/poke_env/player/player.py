@@ -219,6 +219,7 @@ class Player(PlayerNetwork, ABC):
                         if battle.move_on_next_request:
                             await self._handle_battle_request(battle)
                             battle.move_on_next_request = False
+                            self.check_move(battle)#ADDED BY CHARLIE
             elif split_message[1] == "title":
                 player_1, player_2 = split_message[2].split(" vs. ")
                 battle.players = player_1, player_2
@@ -288,6 +289,23 @@ class Player(PlayerNetwork, ABC):
         else:
             message = self.choose_move(battle)
         await self._send_message(message, battle.battle_tag)
+
+    async def check_wrapper(
+        self,
+        battle: Battle,
+        from_teampreview_request: bool = False,
+        maybe_default_order=False,
+    ):
+        pass
+
+    @abstractmethod #added by CHARLIE
+    def check_move(
+        self,
+        battle: Battle,
+        from_teampreview_request: bool = False,
+        maybe_default_order=False,
+    ):
+        pass
 
     def _manage_error_in(self, battle: Battle):
         pass

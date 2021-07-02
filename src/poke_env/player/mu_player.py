@@ -18,16 +18,16 @@ from poke_env.player_configuration import PlayerConfiguration
 from poke_env.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 from poke_env.utils import to_id_str
-
-
+from self_play import MCTS, Node, GameHistory, MinMaxStats
 
 
 class MuPlayer(Player, ABC):  # pyre-ignore
-    """Player exposing ur mom. Recommended use is with play_against.
-    """
+    """Player with local gamehistory of own perspective.
+    Chooses move using and MCTS search of local model."""
     #gottem
     MAX_BATTLE_SWITCH_RETRY = 10000
     PAUSE_BETWEEN_RETRIES = 0.001
+    _ACTION_SPACE = list(range(4 * 4 + 6))
 
     def __init__(
         self,
@@ -40,29 +40,7 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         start_listening: bool = True,
         team: Optional[Union[str, Teambuilder]] = None,
     ):
-        """
-        :param player_configuration: Player configuration. If empty, defaults to an
-            automatically generated username with no password. This option must be set
-            if the server configuration requires authentication.
-        :type player_configuration: PlayerConfiguration, optional
-        :param avatar: Player avatar id. Optional.
-        :type avatar: int, optional
-        :param battle_format: Name of the battle format this player plays. Defaults to
-            gen8randombattle.
-        :type battle_format: str
-        :param log_level: The player's logger level.
-        :type log_level: int. Defaults to logging's default level.
-        :param server_configuration: Server configuration. Defaults to Localhost Server
-            Configuration.
-        :type server_configuration: ServerConfiguration, optional
-        :param start_listening: Wheter to start listening to the server. Defaults to
-            True.
-        :type start_listening: bool
-        :param team: The team to use for formats requiring a team. Can be a showdown
-            team string, a showdown packed team string, of a ShowdownTeam object.
-            Defaults to None.
-        :type team: str or Teambuilder, optional
-        """
+        #summary deleted
         super(MuPlayer, self).__init__(
             player_configuration=player_configuration,
             avatar=avatar,
@@ -73,20 +51,79 @@ class MuPlayer(Player, ABC):  # pyre-ignore
             start_listening=start_listening,
             team=team,
         )
-        self._actions = {}
+        #self._actions = {}
         self._current_battle: Battle
-        self._observations = {}
-        self._reward_buffer = {}
+        #self._observations = {}
+        #self._reward_buffer = {}
         self._start_new_battle = False
+        self.laction = 0
+        self.gh = GameHistory()
 
-    async def mu_message(
-        self, player, message
-    ) -> None:
+    async def battle_once(self, opponent: Player):
+        print("mu plaer 63 battle_once called")
+        #challenge, accept by opponent, get battle, choose moves until end, game history
+        self._start_new_battle = True
+        async def launch_battles(player: MuPlayer, opponent: Player):
+            battles_coroutine = asyncio.gather(
+                player.send_challenges(
+                    opponent=to_id_str(opponent.username),
+                    n_challenges=1,
+                    to_wait=opponent.logged_in,
+                ),
+                opponent.accept_challenges(
+                    opponent=to_id_str(player.username), n_challenges=1
+                ),
+            )
+            await battles_coroutine
+
+        def env_algorithm_wrapper(player, kwargs):
+            #env_algorithm(player, **kwargs)
+
+            player._start_new_battle = False
+            while True:
+                try:
+                    player.complete_current_battle()
+                    player.reset()
+                except OSError:
+                    break
+
+        loop = asyncio.get_event_loop()
+        env_algorithm_kwargs=None
+        if env_algorithm_kwargs is None:
+            env_algorithm_kwargs = {}
+
+        thread = Thread(
+            target=lambda: env_algorithm_wrapper(self, env_algorithm_kwargs)
+        )
+        thread.start()
+
+        while self._start_new_battle:
+            loop.run_until_complete(launch_battles(self, opponent))
+        thread.join()
+        """while True:#no idea what this does
+            try:
+                player.complete_current_battle()
+                player.reset()
+            except OSError:
+                break
+        ###
+        loop = asyncio.get_event_loop()
+
+        while self._start_new_battle:
+            loop.run_until_complete(launch_battles(self, opponent))
+        """
+        #battle initialzation observations
+        self.gh.action_history.append(0)
+        self.gh.observation_history.append(self.battle_state(self._current_battle))
+        self.gh.reward_history.append(0)
+        self.gh.to_play_history.append(1)
+        #append game history stuff to local gh attribute
+        #no return
+
+    async def mu_message(self, player, message) -> None:
         await self.player_message(player, message)
 
-    async def mu_room_message(
-        self, messagein, battlein
-    ) -> None:
+    async def mu_room_message(self, messagein, battlein) -> None:
         await self._send_message(message = messagein, battle=battlein)
 
     def _action_to_move(self, action: int, battle: Battle) -> str:
@@ -102,6 +139,8 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         return "I didn't finish this method b/c no purpose yet"
 
     def battle_state(self, battle: Battle):
+        battle = self._current_battle
+        assert battle != None, "battle_state received None instead of Battle object"
         state = [0]* 8
         state0 = [0]*6
         state0[0] = battle.fields#Set[Field]
@@ -171,10 +210,6 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         item
         dynamaxed(only for active)
         boosts(only for active)
-
-
-        """
-        """
         end
         """
 
@@ -200,6 +235,12 @@ class MuPlayer(Player, ABC):  # pyre-ignore
             sum += ord(instring[a]) - 97
         return sum
 
+    def check_win(self, battle: Battle):
+        if battle.won:
+            return 1
+        elif battle.lost:
+            return -1
+        return 0
 
     def _battle_finished_callback(self, battle: Battle) -> None:
         print("battle has completed")
@@ -208,9 +249,41 @@ class MuPlayer(Player, ABC):  # pyre-ignore
     def _init_battle(self, battle: Battle) -> None:
         self._observations[battle] = Queue()
         self._actions[battle] = Queue()
+        self._current_battle = battle#added
 
     def choose_move(self, action, battle: Battle) -> str:
+        if battle not in self._observations or battle not in self._actions:
+            self._init_battle(battle)
+        stacked_observations = game_history.get_stacked_observations(
+            -1,
+            self.config.stacked_observations,
+        )
+        root, mcts_info = MCTS(self.config).run(
+            self.model,
+            stacked_observations,
+            self.game.legal_actions(1),
+            self.game.to_play(),#shouldnt exist
+            True,
+        )
+        action = self.select_action(
+            root,
+            temperature
+            if not temperature_threshold
+            or len(gh.action_history) < temperature_threshold
+            else 0,
+        )
+        self.laction = action
+        #step()
+        #gamehistory appends are normally here
         return self._action_to_move(action, battle)
+
+    #check move's results
+    def check_move(self, battle: Battle, from_teampreview_request: bool = False, maybe_default_order=False):
+        gh.store_search_statistics(root, self.config.action_space)
+        gh.action_history.append(self.laction)
+        gh.observation_history.append(self.battle_state(battle))
+        gh.reward_history.append(self.check_win(battle))
+        gh.to_play_history.append(self.to_play())#supposed to be to_play but to_play is not in synchrnous
 
     def choose_max_move(self, battle: Battle):
         if battle.available_moves:
@@ -220,16 +293,6 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         # If no attack is available, a random switch will be made
         else:
             return self.choose_random_move(battle)
-
-    @abstractmethod
-    def observe_opponent(self, battle: Battle) -> Any:
-        """Abstract method for embedding battles.
-
-        :param battle: The battle whose state is being embedded
-        :type battle: Battle
-        :return: The computed embedding
-        :rtype: Any
-        """
 
     def close(self) -> None:
         """Unimplemented. Has no effect."""
@@ -333,11 +396,11 @@ class MuPlayer(Player, ABC):  # pyre-ignore
             self._current_battle.finished,
             {},
         )
-
+    """
     def play_against(
         self, env_algorithm: Callable, opponent: Player, env_algorithm_kwargs=None
     ):
-        """Executes a function controlling the player while facing opponent.
+        Executes a function controlling the player while facing opponent.
 
         The env_algorithm function is executed with the player environment as first
         argument. It exposes the open ai gym API.
@@ -357,7 +420,7 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         :type opponent: Player
         :param env_algorithm_kwargs: Optional arguments to pass to the env_algorithm.
             Defaults to None.
-        """
+
         self._start_new_battle = True
 
         async def launch_battles(player: EnvPlayer, opponent: Player):
@@ -397,91 +460,13 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         while self._start_new_battle:
             loop.run_until_complete(launch_battles(self, opponent))
         thread.join()
-
+    """
     async def die():
         await self.stop_listening()
 
     def action_space(self) -> List:
         """Returns the action space of the player. Must be implemented by subclasses."""
         pass
-
-
-class Gen7EnvSinglePlayer(MuPlayer):  # pyre-ignore
-    _ACTION_SPACE = list(range(3 * 4 + 6))
-
-    def _action_to_move(self, action: int, battle: Battle) -> str:
-        """Converts actions to move orders.
-
-        The conversion is done as follows:
-
-        0 <= action < 4:
-            The actionth available move in battle.available_moves is executed.
-        4 <= action < 8:
-            The action - 4th available move in battle.available_moves is executed, with
-            z-move.
-        8 <= action < 12:
-            The action - 8th available move in battle.available_moves is executed, with
-            mega-evolution.
-        12 <= action < 18
-            The action - 12th available switch in battle.available_switches is executed.
-
-        If the proposed action is illegal, a random legal move is performed.
-
-        :param action: The action to convert.
-        :type action: int
-        :param battle: The battle in which to act.
-        :type battle: Battle
-        :return: the order to send to the server.
-        :rtype: str
-        """
-        if (
-            action < 4
-            and action < len(battle.available_moves)
-            and not battle.force_switch
-        ):
-            return self.create_order(battle.available_moves[action])
-        elif (
-            not battle.force_switch
-            and battle.can_z_move
-            and 0 <= action - 4 < len(battle.active_pokemon.available_z_moves)
-        ):
-            return self.create_order(
-                battle.active_pokemon.available_z_moves[action - 4], z_move=True
-            )
-        elif (
-            battle.can_mega_evolve
-            and 0 <= action - 8 < len(battle.available_moves)
-            and not battle.force_switch
-        ):
-            return self.create_order(battle.available_moves[action - 8], mega=True)
-        elif 0 <= action - 12 < len(battle.available_switches):
-            return self.create_order(battle.available_switches[action - 12])
-        else:
-            return self.choose_random_move(battle)
-
-    @property
-    def action_space(self) -> List:
-        """The action space for gen 7 single battles.
-
-        The conversion to moves is done as follows:
-
-            0 <= action < 4:
-                The actionth available move in battle.available_moves is executed.
-            4 <= action < 8:
-                The action - 4th available move in battle.available_moves is executed,
-                with z-move.
-            8 <= action < 12:
-                The action - 8th available move in battle.available_moves is executed,
-                with mega-evolution.
-            12 <= action < 18
-                The action - 12th available switch in battle.available_switches is
-                executed.
-        """
-        return self._ACTION_SPACE
-
-
-class Gen8EnvSinglePlayer(MuPlayer):  # pyre-ignore
-    _ACTION_SPACE = list(range(4 * 4 + 6))
 
     def _action_to_move(self, action: int, battle: Battle) -> str:
         """Converts actions to move orders.
