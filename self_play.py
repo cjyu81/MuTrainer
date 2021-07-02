@@ -141,175 +141,20 @@ class SelfPlay:
         """
         gh1 = GameHistory()
         gh2 = GameHistory()
-        #mirror the rest of the initializations
-        obscollection = await asyncio.gather(self.game.reset())
-        obs1, obs2 = obscollection[0]
-        gh1.action_history.append(0)
-        gh1.observation_history.append(obs1)
-        gh1.reward_history.append(0)
-        gh1.to_play_history.append(self.game.to_play())#supposed to be to_play but to_play is not in synchrnous
-        gh2.action_history.append(0)
-        gh2.observation_history.append(obs2)
-        gh2.reward_history.append(0)
-        gh2.to_play_history.append(self.game.to_play())#supposed to be to_play but to_play is not in synchrnous
-
-        done = False
-
-        if render:
+        await asyncio.gather(self.game.reset())
+        if render: #should always be false
             self.game.render()
-
-        with torch.no_grad():
-            while (
-                not done and len(gh1.action_history) <= self.config.max_moves
-            ):
-                assert (
-                    len(numpy.array(obs1).shape) == 3
-                ), f"Observation should be 3 dimensionnal instead of {len(numpy.array(observation).shape)} dimensionnal. Got observation of shape: {numpy.array(observation).shape}"
-                assert (
-                    numpy.array(obs1).shape == self.config.observation_shape
-                ), f"Observation should match the observation_shape defined in MuZeroConfig. Expected {self.config.observation_shape} but got {numpy.array(observation).shape}."
-
-
-                stacked_observations1 = gh1.get_stacked_observations(
-                    -1,
-                    self.config.stacked_observations,
-                )
-                stacked_observations2 = gh2.get_stacked_observations(
-                    -1,
-                    self.config.stacked_observations,
-                )
-                # Choose the action
-                if opponent == "self":# or muzero_player == self.game.to_play():
-                    #run duplicate for two
-                    root1, mcts_info1 = MCTS(self.config).run(
-                        self.model,
-                        stacked_observations1,
-                        self.game.legal_actions(1),
-                        self.game.to_play(),#shouldnt exist
-                        True,
-                    )
-                    root2, mcts_info2 = MCTS(self.config).run(
-                        self.model,
-                        stacked_observations2,
-                        self.game.legal_actions(2),
-                        self.game.to_play(),#shouldnt exist
-                        True,
-                    )
-                    #run duplicate for two
-                    #Action selection process - CHARLIE
-                    action1 = self.select_action(
-                        root1,
-                        temperature
-                        if not temperature_threshold
-                        or len(gh1.action_history) < temperature_threshold
-                        else 0,
-                    )
-                    action2 = self.select_action(
-                        root2,
-                        temperature
-                        if not temperature_threshold
-                        or len(gh1.action_history) < temperature_threshold
-                        else 0,
-                    )
-                    if render:
-                        print(f'Tree depth: {mcts_info["max_tree_depth"]}')
-                        print(
-                            f"Root value for player {self.game.to_play()}: {root.value():.2f}"
-                        )
-                        #run duplicate for two
-                else:
-                    print("This should not be printing because only training shud occur -charlie")
-                    #raise NotImplementedError("Have not implemented synchronous turn game interface")
-                    #action, root = self.select_opponent_action(
-                    #    opponent, stacked_observations
-                    #)
-                    #run duplicate for two but no need to implement yet
-                #run step with 2 actions as parameters
-                holderdummy = await asyncio.gather(self.game.step(action1,action2))
-                observation1, reward1, done1, observation2, reward2, done2 = holderdummy[0]
-                #if step returns exception, eliminate action from legal_actions and run select_action then step again
-
-                if render:
-                    print(f"Played action: {self.game.action_to_string(action)}")
-                    self.game.render()
-
-                gh1.store_search_statistics(root1, self.config.action_space)
-                gh2.store_search_statistics(root2, self.config.action_space)
-                # Next batch
-                gh1.action_history.append(action1)
-                gh1.observation_history.append(observation1)
-                gh1.reward_history.append(reward1)
-                gh1.to_play_history.append(self.game.to_play())
-                gh2.action_history.append(action2)
-                gh2.observation_history.append(observation2)
-                gh2.reward_history.append(reward2)
-                gh2.to_play_history.append(self.game.to_play())
-
+        await asyncio.gather(self.game.play_battle(gh1,gh2,self.config,self.model,temperature, temperature_threshold))
+        assert isinstance(gh1,GameHistory)
+        print("gh1 self play 149 gh attributes below:")
+        print(gh1.observation_history)
+        print(gh1.action_history)
+        print(gh1.reward_history)
+        print(gh1.to_play_history)
+        print(gh1.child_visits)
+        print(gh1.root_values)
+        print(gh1.reanalysed_predicted_root_values)
         return gh1, gh2
-
-    async def close_game(self):
-        await self.game.close()
-
-    def select_opponent_action(self, opponent, stacked_observations):
-        """
-        Select opponent action for evaluating MuZero level.
-        """
-        if opponent == "human":
-            root, mcts_info = MCTS(self.config).run(
-                self.model,
-                stacked_observations,
-                self.game.legal_actions(),
-                self.game.to_play(),
-                True,
-            )
-            print(f'Tree depth: {mcts_info["max_tree_depth"]}')
-            print(f"Root value for player {self.game.to_play()}: {root.value():.2f}")
-            print(
-                f"Player {self.game.to_play()} turn. MuZero suggests {self.game.action_to_string(self.select_action(root, 0))}"
-            )
-            return self.game.human_to_action(), root
-        elif opponent == "expert":
-            return self.game.expert_agent(), None
-        elif opponent == "random":
-            assert (
-                self.game.legal_actions()
-            ), f"Legal actions should not be an empty array. Got {self.game.legal_actions()}."
-            assert set(self.game.legal_actions()).issubset(
-                set(self.config.action_space)
-            ), "Legal actions should be a subset of the action space."
-
-            return numpy.random.choice(self.game.legal_actions()), None
-        else:
-            raise NotImplementedError(
-                'Wrong argument: "opponent" argument should be "self", "human", "expert" or "random"'
-            )
-
-
-    @staticmethod
-    def select_action(node, temperature):
-        """
-        Select action according to the visit count distribution and the temperature.
-        The temperature is changed dynamically with the visit_softmax_temperature function
-        in the config.
-        """
-        visit_counts = numpy.array(
-            [child.visit_count for child in node.children.values()], dtype="int32"
-        )
-        actions = [action for action in node.children.keys()]
-        if temperature == 0:
-            action = actions[numpy.argmax(visit_counts)]
-        elif temperature == float("inf"):
-            action = numpy.random.choice(actions)
-        else:
-            # See paper appendix Data Generation
-            visit_count_distribution = visit_counts ** (1 / temperature)
-            visit_count_distribution = visit_count_distribution / sum(
-                visit_count_distribution
-            )
-            action = numpy.random.choice(actions, p=visit_count_distribution)
-
-        return action
-
 
 # Game independent
 class MCTS:
@@ -495,7 +340,6 @@ class MCTS:
         else:
             raise NotImplementedError("More than two player mode not implemented.")
 
-
 class Node:
     def __init__(self, prior):
         self.visit_count = 0
@@ -540,7 +384,6 @@ class Node:
         frac = exploration_fraction
         for a, n in zip(actions, noise):
             self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
-
 
 class GameHistory:
     """
@@ -611,7 +454,6 @@ class GameHistory:
             )
 
         return stacked_observations
-
 
 class MinMaxStats:
     """
