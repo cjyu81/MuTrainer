@@ -185,7 +185,7 @@ class MuZero:
         self.shared_storage_worker = None
 
 
-        self.playercount = 0
+        self.playercount = 1
         #self.player1 = MuDummy2(11)
         #self.player2 = MuDummy2(22)
 
@@ -240,7 +240,7 @@ class MuZero:
                 num_cpus=0,
                 num_gpus=num_gpus_per_worker if self.config.selfplay_on_gpu else 0,
             ).remote(
-                self.checkpoint, self.Game, self.config, self.config.seed + seed, p1num=self.getnextplayernum()+1042,p2num=self.getnextplayernum()+2069,
+                self.checkpoint, self.Game, self.config, self.config.seed + seed, p1num=self.getnextplayernum()+10000,p2num=self.getnextplayernum()+20000,
             )
             for seed in range(self.config.num_workers)
         ]
@@ -277,8 +277,8 @@ class MuZero:
             self.Game,
             self.config,
             self.config.seed + self.config.num_workers,
-            self.getnextplayernum(),
-            self.getnextplayernum(),
+            self.getnextplayernum()+30000,
+            self.getnextplayernum()+40000,
         )
         self.test_worker.continuous_self_play.remote(
             self.shared_storage_worker, None, True
@@ -441,7 +441,7 @@ class MuZero:
         muzero_player = muzero_player if muzero_player else self.config.muzero_player
         self_play_worker = self_play.SelfPlay.options(
             num_cpus=0, num_gpus=num_gpus,
-        ).remote(self.checkpoint, self.Game, self.config, numpy.random.randint(10000),self.getnextplayernum()+10042,self.getnextplayernum()+20069,)
+        ).remote(self.checkpoint, self.Game, self.config, numpy.random.randint(10000),self.getnextplayernum()+50000,self.getnextplayernum()+60000,)
         results = []
         for i in range(num_tests):
             print(f"Testing {i+1}/{num_tests}")
@@ -521,7 +521,7 @@ class MuZero:
         Args:
             horizon (int): Number of timesteps for which we collect information.
         """
-        game = self.Game(self.config.seed,playeronenum=self.getnextplayernum()+142,playertwonum=self.getnextplayernum()+269)
+        game = self.Game(self.config.seed,playeronenum=self.getnextplayernum()+70000,playertwonum=self.getnextplayernum()+80000)
         obs = game.reset()
         dm = diagnose_model.DiagnoseModel(self.checkpoint, self.config)
         dm.compare_virtual_with_real_trajectories(obs, game, horizon)
@@ -736,7 +736,7 @@ async def main():
             elif choice == 4:
                 muzero.test(render=True, opponent="human", muzero_player=0)
             elif choice == 5:
-                env = muzero.Game(playeronenum=690+getnextplayernum(),playertwonum=420+getnextplayernum())
+                env = muzero.Game(playeronenum=90000+getnextplayernum(),playertwonum=100000+getnextplayernum())
                 env.reset()
                 env.render()
 

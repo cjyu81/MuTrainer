@@ -19,7 +19,9 @@ from poke_env.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 from poke_env.utils import to_id_str
 from self_play import MCTS, Node, GameHistory, MinMaxStats
-
+import models
+from poke_env.pokeconfig import MuZeroConfig
+import torch
 
 class MuPlayer(Player, ABC):  # pyre-ignore
     """Player with local gamehistory of own perspective.
@@ -39,6 +41,8 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         server_configuration: Optional[ServerConfiguration] = None,
         start_listening: bool = True,
         team: Optional[Union[str, Teambuilder]] = None,
+        initcheckpoint = None,
+        mu_config: MuZeroConfig,
     ):
         #summary deleted
         super(MuPlayer, self).__init__(
@@ -57,19 +61,24 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         #self._reward_buffer = {}
         self._start_new_battle = False
         self.laction = 0
-        self.gh = GameHistory()
+        self.gh = GameHistory()#this will be replaced by self_play's version
+        self.config = mu_config
+        #network initialization
+        self.model = models.MuZeroNetwork(self.config)
+        self.model.set_weights(initcheckpoint["weights"])
+        self.model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        self.model.eval()
+        self._ACTION_SPACE = list(range(4 * 4 + 6))
+        self.temp = 0
+        self.temp_thresh = 0
+        self.lroot = 0
+
 
     def battle_once(self, opponent: Player):
         """
         Does not have team preview functionality for built team battles
         """
-        print("mu player 63 battle_once called")
-        """
-        #battle initialzation observations
-        self.gh.action_history.append(0)
-        self.gh.observation_history.append(self.battle_state(self._current_battle))
-        self.gh.reward_history.append(0)
-        self.gh.to_play_history.append(1)"""
+        #print("mu player 63 battle_once called",self.gh.observation_history)
         #challenge, accept by opponent, get battle, choose moves until end, game history
         self._start_new_battle = True
         async def launch_battles(player: MuPlayer, opponent: Player):
@@ -83,9 +92,9 @@ class MuPlayer(Player, ABC):  # pyre-ignore
                     opponent=to_id_str(player.username), n_challenges=1
                 ),
             )
-            await battle_coroutine
+            await battles_coroutine
             #self._current_battle = await battles_coroutine
-        
+        """
         def env_algorithm_wrapper(player, kwargs):
             #env_algorithm(player, **kwargs)#This should be a control function and not be necessary
             player._start_new_battle = False
@@ -98,10 +107,9 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         loop = asyncio.get_event_loop()
         env_algorithm_kwargs=None#shouldnt be necessary so initialized as None
         if env_algorithm_kwargs is None:
-            env_algorithm_kwargs = {}
-        thread = Thread(
-            target=lambda: env_algorithm_wrapper(self, env_algorithm_kwargs)
-        )
+            env_algorithm_kwargs = {}"""
+        loop = asyncio.get_event_loop()#duplicated
+        thread = Thread()
         thread.start()
         while self._start_new_battle:
             loop.run_until_complete(launch_battles(self, opponent))
@@ -136,40 +144,37 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         return "I didn't finish this method b/c no purpose yet"
 
     def battle_state(self, battle: Battle):
+        """
+        Much of the data in a pokemon battle is not ordinal or easily represented
+        This method will encode a variety of information naively using values from 0-1
+        2D array with battle/field attributes in first row.
+        Next 12 rows are player's and opponent's pokemon
+        """
         battle = self._current_battle
         assert battle != None, "battle_state received None instead of Battle object"
-        state = [0]* 14# 1+1+6+6
-        state0 = [0]*6#6 conditions
-        state0[0] = battle.fields#Set[Field]
-        state0[1] = battle.opponent_side_conditions#Set(SideCondition)
-        state0[2] = battle.side_conditions#Set(SideCondition)
-        state0[3] = battle.maybe_trapped#bool
-        state0[4] = battle.trapped#bool
-        state0[5] = battle.weather#Optional[Weather]
-        state[0] = state0
-
-        properties = 13#13 conditions
-        substate = [None]*properties #substate is one pokemon
-        mon1 = battle.active_pokemon
-        substate[0] = mon1.species
-        substate[1] = mon1.base_stats
-        substate[2] = mon1.types
-        substate[3] = mon1.ability
-        substate[4] = mon1.can_dynamax#level
-        substate[5] = mon1.current_hp_fraction
-        substate[6] = mon1.effects
-        substate[7] = mon1.status
-        substate[8] = mon1.item
-        intmovefour = self.stripmoves(mon1.moves)
-        substate[9] = intmovefour[0]
-        substate[10] = intmovefour[1]
-        substate[11] = intmovefour[2]
-        substate[12] = intmovefour[3]
-        state[1] =substate
-        monindex = 2
+        state = [0]* 13# 1+6+6 1 field, 6 mons, 6 opmons
+        print("battle fields value is ", battle.fields)
+        properties = 13#13 pokemon traits
+        substate = [0]*properties #substate is one pokemon
+        substate[0] = mysit(battle.fields)#Set[Field]
+        substate[1] = battle.opponent_side_conditions#Set(SideCondition)
+        substate[2] = battle.side_conditions#Set(SideCondition)
+        substate[3] = battle.maybe_trapped#bool
+        substate[4] = battle.trapped#bool
+        substate[5] = battle.weather#Optional[Weather]
+        substate[6] = battle.active_pokemon.can_dynamax
+        substate[7] = 0
+        substate[8] = 0
+        substate[9] = 0
+        substate[10] = 0
+        substate[11] = 0
+        substate[12] = 0
+        substate[13] = 0
+        state[0] = substate
+        monindex = 1
         for mon in battle.team.values():
             substate[0] = mon.species
-            substate[1] = mon.base_stats
+            substate[1] = mon.base_stats["spe"]
             substate[2] = mon.types
             substate[3] = mon.ability
             substate[4] = mon.level
@@ -184,8 +189,24 @@ class MuPlayer(Player, ABC):  # pyre-ignore
             substate[12] = intmovefour[3]
             state[monindex] = substate
             monindex += 1
-        opponent_prop = 2
-
+        opponent_prop = properties
+        opss = [0] * opponnent_prop
+        for opmon in battle.opponent_team.values():
+            opss[0] = opmon.species
+            opss[1] = opmon.base_stats["spe"]
+            opss[2] = opmon.types
+            opss[3] = opmon.ability
+            opss[4] = opmon.level
+            opss[5] = opmon.current_hp_fraction
+            opss[6] = opmon.effects
+            opss[7] = opmon.status
+            opss[8] = opmon.item
+            opss[9] = 0
+            opss[10] = 0
+            opss[11] = 0
+            opss[12] = 0
+            opss[13] = 0
+            #moves not implemented yet
 
         return state
         """
@@ -210,6 +231,9 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         end
         """
 
+    def empty_state(self):
+        return [[[0]*13]*13]
+
     def stripmoves(self, moves):
         """
         moves paramter is array of 4 moves.
@@ -232,12 +256,21 @@ class MuPlayer(Player, ABC):  # pyre-ignore
             sum += ord(instring[a]) - 97
         return sum
 
+    def myone(self,value,min,max):
+        """
+        My integer to 0-1 (myone)
+        """
+        return (value-min)/(max-min)
+
     def check_win(self, battle: Battle):
         if battle.won:
             return 1
         elif battle.lost:
             return -1
         return 0
+
+    def printname(self):
+        print("Mu Player's name is ", self._username)
 
     def _action_to_move(self, action: int, battle: Battle) -> str:
         """Abstract method converting elements of the action space to move orders.
@@ -248,22 +281,24 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         #self._observations[battle].put(self.embed_battle(battle))
 
     def _init_battle(self, battle: Battle) -> None:
-        self._observations[battle] = Queue()
-        self._actions[battle] = Queue()
         self._current_battle = battle#added
 
     def choose_move(self, battle: Battle) -> str:
-        if battle not in self._observations or battle not in self._actions:
-            self._init_battle(battle)
-        stacked_observations = game_history.get_stacked_observations(
+        #print("choose move method, obs history length below")
+        #print(len(self.gh.observation_history), len(self.gh.observation_history[0]), len(self.gh.observation_history[0][0]),len(self.gh.observation_history[0][0]))
+        #self.printname()
+        self._init_battle(battle)
+        temperature = self.temp
+        temperature_threshold = self.temp_thresh
+        stacked_observations = self.gh.get_stacked_observations(
             -1,
             self.config.stacked_observations,
         )
         root, mcts_info = MCTS(self.config).run(
             self.model,
             stacked_observations,
-            self.game.legal_actions(1),
-            self.game.to_play(),#shouldnt exist
+            self._ACTION_SPACE,
+            1,#shouldnt exist
             True,
         )
         action = self.select_action(
@@ -274,17 +309,19 @@ class MuPlayer(Player, ABC):  # pyre-ignore
             else 0,
         )
         self.laction = action
+        self.lroot = root
         #step()
         #gamehistory appends are normally here
         return self._action_to_move(action, battle)
 
     #check move's results
     def check_move(self, battle: Battle, from_teampreview_request: bool = False, maybe_default_order=False):
-        gh.store_search_statistics(root, self.config.action_space)
-        gh.action_history.append(self.laction)
-        gh.observation_history.append(self.battle_state(battle))
-        gh.reward_history.append(self.check_win(battle))
-        gh.to_play_history.append(self.to_play())#supposed to be to_play but to_play is not in synchrnous
+        root = self.lroot
+        self.gh.store_search_statistics(root, self.config.action_space)
+        self.gh.action_history.append(self.laction)
+        self.gh.observation_history.append(self.empty_state())
+        self.gh.reward_history.append(self.check_win(battle))
+        self.gh.to_play_history.append(self.to_play())#supposed to be to_play but to_play is not in synchrnous
 
     def choose_max_move(self, battle: Battle):
         if battle.available_moves:
@@ -483,6 +520,30 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         """
         return self._ACTION_SPACE
 
+    @staticmethod
+    def select_action(node, temperature):
+        """
+        Select action according to the visit count distribution and the temperature.
+        The temperature is changed dynamically with the visit_softmax_temperature function
+        in the config.
+        """
+        visit_counts = np.array(
+            [child.visit_count for child in node.children.values()], dtype="int32"
+        )
+        actions = [action for action in node.children.keys()]
+        if temperature == 0:
+            action = actions[np.argmax(visit_counts)]
+        elif temperature == float("inf"):
+            action = np.random.choice(actions)
+        else:
+            # See paper appendix Data Generation
+            visit_count_distribution = visit_counts ** (1 / temperature)
+            visit_count_distribution = visit_count_distribution / sum(
+                visit_count_distribution
+            )
+            action = np.random.choice(actions, p=visit_count_distribution)
+
+        return action
 
 def main():
     start = time.time()

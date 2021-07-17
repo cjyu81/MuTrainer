@@ -1,0 +1,10 @@
+This is a text file listing Charlie's personal roadmap for the Mu Trainer project
+
+This project was started approximately April of 2020 but back then I was a junior
+who had never coded in Python. It took me a long time to learn the basics of
+Python and its wonderful machine learning libraries.
+
+Roadmap:
+Make it runnable
+Make it interactable
+Make it faster

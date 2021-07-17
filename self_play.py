@@ -7,7 +7,7 @@ import torch
 
 import models
 
-import asyncio
+#import asyncio
 import time
 
 @ray.remote
@@ -19,7 +19,7 @@ class SelfPlay:
     def __init__(self, initial_checkpoint, Game, config, seed, p1num, p2num):
         self.config = config
         #print(p1num, " p1 self play game initialization p2 ", p2num)
-        self.game = Game(seed,p1num,p2num)
+        self.game = Game(seed,p1num,p2num,initial_checkpoint,config)
         # Fix random generator seed
         numpy.random.seed(seed)
         torch.manual_seed(seed)
@@ -31,23 +31,23 @@ class SelfPlay:
         self.model.eval()
 
 
-    async def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
+    def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
         """
         Wrapper method. Calls csp
         """
         print("Wrapper csp selfplay method running")
-        await asyncio.gather(self.csp(shared_storage, replay_buffer, test_mode))
+        #await asyncio.gather(self.csp(shared_storage, replay_buffer, test_mode))
+        self.csp(shared_storage, replay_buffer, test_mode)
 
-    async def csp(self, shared_storage, replay_buffer, test_mode=False):
+    def csp(self, shared_storage, replay_buffer, test_mode=False):
         while ray.get(
             shared_storage.get_info.remote("training_step")
         ) < self.config.training_steps and not ray.get(
             shared_storage.get_info.remote("terminate")
         ):
             self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
-            print("ran")
             if not test_mode:
-                game_history = await asyncio.gather(self.play_game(
+                game_history = self.play_game(
                     self.config.visit_softmax_temperature_fn(
                         trained_steps=ray.get(
                             shared_storage.get_info.remote("training_step")
@@ -60,23 +60,23 @@ class SelfPlay:
                     False,
                     "self",
                     0,
-                ))
-                gamehistory1 = game_history[0][0]
-                gamehistory2 = game_history[0][1]
+                )
+                gamehistory1 = game_history[0]
+                gamehistory2 = game_history[1]
                 replay_buffer.save_game.remote(gamehistory1, shared_storage)
                 replay_buffer.save_game.remote(gamehistory2, shared_storage)
 
             else:
                 # Take the best action (no exploration) in test mode
-                game_history = await asyncio.gather(self.play_game(
+                game_history = self.play_game(
                     0,
                     self.config.temperature_threshold,
                     False,
                     "self",# if len(self.config.players) == 1 else self.config.opponent,
                     self.config.muzero_player,
-                ))
-                gamehistory1 = game_history[0][0]
-                gamehistory2 = game_history[0][1]
+                )
+                gamehistory1 = game_history[0]
+                gamehistory2 = game_history[1]
                 # Save to the shared storage
                 shared_storage.set_info.remote(
                     {
@@ -131,20 +131,30 @@ class SelfPlay:
                 ):
                     time.sleep(0.5)
 
-        await self.close_game()
+        self.close_game()
 
-    async def play_game(
+    def play_game(
         self, temperature, temperature_threshold, render, opponent, muzero_player
     ):
         """
         Play one game with actions based on the Monte Carlo tree search at each moves.
         """
         gh1 = GameHistory()
+        gh1.action_history.append(0)
+        gh1.observation_history.append([[[0]*13]*13])#this is completely wrong but i dont care
+        gh1.reward_history.append(0)
+        gh1.to_play_history.append(1)
         gh2 = GameHistory()
-        await asyncio.gather(self.game.reset())
+        gh2.action_history.append(0)
+        gh2.observation_history.append([[[0]*13]*13])#error uses this input
+        gh2.reward_history.append(0)
+        gh2.to_play_history.append(1)
+        #await asyncio.gather(self.game.reset())
+        self.game.reset()
         if render: #should always be false
             self.game.render()
-        await asyncio.gather(self.game.play_battle(gh1,gh2,self.config,self.model,temperature, temperature_threshold))
+        #await asyncio.gather(self.game.play_battle(gh1,gh2,self.config,self.model,temperature, temperature_threshold))
+        self.game.play_battle(gh1,gh2,self.config,self.model,temperature, temperature_threshold)
         assert isinstance(gh1,GameHistory)
         print("gh1 self play 149 gh attributes below:")
         print(gh1.observation_history)
@@ -424,6 +434,7 @@ class GameHistory:
         Generate a new observation with the observation at the index position
         and num_stacked_observations past observations and actions stacked.
         """
+        #print("local value, ", self.observation_history)
         # Convert to positive index
         index = index % len(self.observation_history)
 
