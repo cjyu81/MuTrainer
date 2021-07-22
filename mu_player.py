@@ -19,8 +19,11 @@ from poke_env.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 from poke_env.utils import to_id_str
 from self_play import MCTS, Node, GameHistory, MinMaxStats
-import models
 from poke_env.pokeconfig import MuZeroConfig
+from poke_env.data import POKEDEX  # if you are not playing in gen 8, you might want to do import GENX_POKEDEX instead
+from poke_env.data import MOVES
+
+import models
 import torch
 
 class MuPlayer(Player, ABC):  # pyre-ignore
@@ -30,6 +33,22 @@ class MuPlayer(Player, ABC):  # pyre-ignore
     MAX_BATTLE_SWITCH_RETRY = 10000
     PAUSE_BETWEEN_RETRIES = 0.001
     _ACTION_SPACE = list(range(4 * 4 + 6))
+
+    SPECIES_TO_DEX_NUMBER = {}
+    idx = 0
+    for species, values in POKEDEX.items():
+        SPECIES_TO_DEX_NUMBER[species] = idx
+        idx += 1
+        if 'otherFormes' in  values:
+            for other_form in values['otherFormes']:
+                SPECIES_TO_DEX_NUMBER[to_id_str(other_form)] = idx
+                idx += 1
+    MOVE_TO_NUM = {}
+    a=1
+    for moves, values in MOVES.items():
+        MOVE_TO_NUM[moves] = a
+        a+=1
+
 
     def __init__(
         self,
@@ -152,100 +171,107 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         """
         battle = self._current_battle
         assert battle != None, "battle_state received None instead of Battle object"
-        state = [0]* 13# 1+6+6 1 field, 6 mons, 6 opmons
-        print("battle fields value is ", battle.fields)
+        state = [[0]* 13]*13# 1+6+6 1 field, 6 mons, 6 opmons
         properties = 13#13 pokemon traits
         substate = [0]*properties #substate is one pokemon
-        substate[0] = mysit(battle.fields)#Set[Field]
-        substate[1] = battle.opponent_side_conditions#Set(SideCondition)
-        substate[2] = battle.side_conditions#Set(SideCondition)
-        substate[3] = battle.maybe_trapped#bool
-        substate[4] = battle.trapped#bool
-        substate[5] = battle.weather#Optional[Weather]
-        substate[6] = battle.active_pokemon.can_dynamax
+        substate[0] = self.statetonum(battle.fields,12)#Set[Field]
+        substate[1] = self.statetonum(battle.opponent_side_conditions,13)#Set(SideCondition)
+        substate[2] = self.statetonum(battle.side_conditions,13)#Set(SideCondition)
+        substate[3] = int(battle.maybe_trapped)#bool
+        substate[4] = int(battle.trapped)#bool
+        substate[5] = self.weathertonum(battle.weather)#Optional[Weather]
+        substate[6] = int(battle.can_dynamax)
         substate[7] = 0
         substate[8] = 0
         substate[9] = 0
         substate[10] = 0
         substate[11] = 0
         substate[12] = 0
-        substate[13] = 0
         state[0] = substate
         monindex = 1
         for mon in battle.team.values():
-            substate[0] = mon.species
-            substate[1] = mon.base_stats["spe"]
-            substate[2] = mon.types
-            substate[3] = mon.ability
-            substate[4] = mon.level
+            substate[0] = 0#mon.species#
+            substate[1] = mon.base_stats["spe"]/500
+            substate[2] = self.typetonum(mon,18)#
+            substate[3] = 0#mon.ability#####
+            substate[4] = mon.level/100
             substate[5] = mon.current_hp_fraction
-            substate[6] = mon.effects
-            substate[7] = mon.status
-            substate[8] = mon.item
-            intmovefour = self.stripmoves(mon1.moves)
-            substate[9] = intmovefour[0]
-            substate[10] = intmovefour[1]
-            substate[11] = intmovefour[2]
-            substate[12] = intmovefour[3]
+            substate[6] = self.statetonum(mon.effects,162)
+            substate[7] = self.statustonum(mon.status,7)
+            substate[8] = 0#mon.item#####
+            substate[9], substate[10], substate[11], substate[12] = self.stripmoves(mon.moves)
             state[monindex] = substate
             monindex += 1
         opponent_prop = properties
-        opss = [0] * opponnent_prop
+        opss = [0] * opponent_prop
         for opmon in battle.opponent_team.values():
-            opss[0] = opmon.species
-            opss[1] = opmon.base_stats["spe"]
-            opss[2] = opmon.types
-            opss[3] = opmon.ability
-            opss[4] = opmon.level
+            opss[0] = 0#opmon.species#####
+            opss[1] = opmon.base_stats["spe"]/500
+            opss[2] = self.typetonum(battle.active_pokemon,18)
+            opss[3] = 0#opmon.ability#####
+            opss[4] = opmon.level/100
             opss[5] = opmon.current_hp_fraction
-            opss[6] = opmon.effects
-            opss[7] = opmon.status
-            opss[8] = opmon.item
-            opss[9] = 0
+            opss[6] = self.statetonum(opmon.effects,162)
+            opss[7] = self.statustonum(opmon.status,7)
+            opss[8] = 0#opmon.item#####
+            opss[9] = 0#will be it's known moves
             opss[10] = 0
             opss[11] = 0
             opss[12] = 0
-            opss[13] = 0
+            state[monindex] = substate
+            monindex += 1
             #moves not implemented yet
-
-        return state
-        """
-        field weather
-        terrain
-        state
-        hazards
-        dynamax available
-
-        species
-        base stats
-        types
-        ability
-        level
-        hp fraction
-        effects
-        status
-        moves and PP
-        item
-        dynamaxed(only for active)
-        boosts(only for active)
-        end
-        """
+        return [state]
 
     def empty_state(self):
         return [[[0]*13]*13]
 
     def stripmoves(self, moves):
         """
-        moves paramter is array of 4 moves.
+        moves parameter is array of 4 moves.
         Returns 4 integers representing the moves.
-        These values are abritrarily determined by move id.
+        These values are assigned with the constant MOVE_TO_NUM dictionary
         """
-        intmoves[4] = [0]*4
+        intmoves = [0]*4
         counter = 0
-        for moof in moves:
-            intmoves[counter]=self.mysit(moof.id)
+        for move in moves:
+            intmoves[counter]=self.MOVE_TO_NUM[move]
             counter+=1
-        return intmoves
+
+        return intmoves[0], intmoves[1], intmoves[2], intmoves[3]
+
+    def statetonum(self, states, statenum):
+        #Generates a unique corresponding int ID for each field combination
+        if not states or states is None:
+            return 0
+        a=0
+        num = 0
+        if(type(states) == 'Weather'):
+            print("STATES IS ")
+            print(states)
+            raise ValueError("States is weather; please review errors")
+        for state in states:
+            num+=state.value*(statenum**a)
+            a+=1
+        return num
+
+    def weathertonum(self, weather):
+        if not weather or weather is None:
+            return 0
+        return weather.value
+
+    def typetonum(self, pokemon, typenum):
+        #same function as statetonum but functions for tuples instead of sets
+        num=0
+        num += pokemon._type_1.value
+        if pokemon._type_2:
+            num+= pokemon._type_2.value * typenum
+        return num
+
+    def statustonum(self, status, statusnum):
+        if not status or status is None:
+            return 0
+        return status.value
 
     def mysit(self, instring):
         """
@@ -290,15 +316,18 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         self._init_battle(battle)
         temperature = self.temp
         temperature_threshold = self.temp_thresh
+        print("choose move contents: ")
+        print(self.config.stacked_observations)
         stacked_observations = self.gh.get_stacked_observations(
             -1,
             self.config.stacked_observations,
         )
+        print(stacked_observations)
         root, mcts_info = MCTS(self.config).run(
             self.model,
             stacked_observations,
             self._ACTION_SPACE,
-            1,#shouldnt exist
+            1,
             True,
         )
         action = self.select_action(
@@ -319,9 +348,9 @@ class MuPlayer(Player, ABC):  # pyre-ignore
         root = self.lroot
         self.gh.store_search_statistics(root, self.config.action_space)
         self.gh.action_history.append(self.laction)
-        self.gh.observation_history.append(self.empty_state())
+        self.gh.observation_history.append(self.battle_state(battle))
         self.gh.reward_history.append(self.check_win(battle))
-        self.gh.to_play_history.append(self.to_play())#supposed to be to_play but to_play is not in synchrnous
+        self.gh.to_play_history.append(1)#technically should be to_play
 
     def choose_max_move(self, battle: Battle):
         if battle.available_moves:

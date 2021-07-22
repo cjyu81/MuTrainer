@@ -1,3 +1,4 @@
+import pdb
 import copy
 import importlib
 import math
@@ -118,7 +119,7 @@ class MuZero:
                     setattr(self.config, param, value)
             else:
                 self.config = config
-
+        
         # Fix random generator seed
         numpy.random.seed(self.config.seed)
         torch.manual_seed(self.config.seed)
